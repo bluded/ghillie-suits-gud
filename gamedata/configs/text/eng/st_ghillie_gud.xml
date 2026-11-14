@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<string_table>
+	<string id="st_ghillie_wrap_name">
+		<text>Ghillie Wrap</text>
+	</string>
+	<string id="st_ghillie_wrap_descr">
+		<text>A ghillie suit cut down into a loose wrap of netting and burlap strips that hangs over whatever armor you already wear. It offers no protection, but breaks up your outline so human eyes slide past you, as long as you keep still or move slowly. Takes one attachment belt slot.\n\nCan't be attached over an exoskeleton: there is no hiding a powered frame under burlap.</text>
+	</string>
+	<string id="st_ghillie_gud_cut">
+		<text>Cut into ghillie wrap</text>
+	</string>
+	<string id="st_ghillie_gud_cut_done">
+		<text>You cut the ghillie suit down into a wrap.</text>
+	</string>
+	<string id="st_ghillie_gud_cut_upgraded">
+		<text>Remove the upgrades before cutting the suit.</text>
+	</string>
+	<string id="st_ghillie_gud_sew">
+		<text>Sew back into ghillie suit</text>
+	</string>
+	<string id="st_ghillie_gud_sew_done">
+		<text>Wrap sewn back into a ghillie suit.</text>
+	</string>
+
+	<string id="st_ghillie_gud_no_exo">
+		<text>You can't attach a ghillie wrap to an exoskeleton, dummy!</text>
+	</string>
+	<!-- MCM -->
+	<string id="ui_mcm_menu_ghillie_gud">
+		<text>Ghillie Suits Gud - GSG</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_enabled">
+		<text>Enable ghillie wrap stealth</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_strength">
+		<text>Camouflage strength</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_strength_desc">
+		<text>How much the wrap cuts how fast human NPCs notice you while moving, before the movement levels below are applied. 0.8 = 80% slower. Standing still has its own setting.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_strength_still">
+		<text>Camouflage strength while standing still</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_strength_still_desc">
+		<text>How much the wrap cuts how fast human NPCs notice you while you stand completely still, far enough away. 0.95 = awareness builds at 5% of normal speed. Moving uses the normal camouflage strength.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_move_creep">
+		<text>Effect while creeping (slow crouch)</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_move_crouch_run">
+		<text>Effect while crouch-running</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_move_walk">
+		<text>Effect while walking</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_move_creep_desc">
+		<text>Share of the full camouflage you keep while crouching slowly. Faster crouch movement blends toward the crouch-running value.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_move_crouch_run_desc">
+		<text>Share of the full camouflage you keep while moving fast in a crouch. Slower crouch movement blends toward the creeping value.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_move_walk_desc">
+		<text>Share of the full camouflage you keep while moving this way. Sprinting, jumping and shooting always give none.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_fade_near">
+		<text>No effect closer than (m)</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_fade_far">
+		<text>Full effect beyond (m)</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_fade_near_desc">
+		<text>Between the two distances the camouflage fades in smoothly.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_fade_far_desc">
+		<text>Between the two distances the camouflage fades in smoothly.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_armor_reduction">
+		<text>Armor bulk penalty reduction</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_armor_reduction_desc">
+		<text>How much of the heavier-armor detection penalty the wrap hides at full effect. 0.5 = halved. Fades with the camouflage: less while moving or close, none while sprinting or firing.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_shot_window">
+		<text>Camouflage lost after firing (s)</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_shot_window_desc">
+		<text>After you fire, the wrap gives no camouflage for this many seconds.</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_debug">
+		<text>Debug log</text>
+	</string>
+	<string id="ui_mcm_ghillie_gud_debug_desc">
+		<text>Prints the stealth multiplier to the console log about once a second while it applies.</text>
+	</string>
+	<string id="st_ghillie_gud_exchange_failed">
+		<text>Could not create the replacement. Your item was kept.</text>
+	</string>
+</string_table>

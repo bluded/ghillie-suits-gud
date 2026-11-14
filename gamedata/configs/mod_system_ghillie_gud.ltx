@@ -1,0 +1,86 @@
+; Ghillie Suits Gud (GSG) - item definitions (DLTX)
+; Adds ghillie_wrap, a ghillie suit worn over your armor via an attachment
+; belt slot, and right-click actions that cut a ghillie_outfit down into
+; one (1 outfit -> 1 ghillie_wrap) and sew it back. Condition carries over.
+
+;--------------------------------------------------------------------------
+; The wrap: a belt attachment built on the same base as kevlar plates.
+; No protection, no restore effects, no condition loss (degrade_rate = 0).
+;--------------------------------------------------------------------------
+[ghillie_wrap]:af_base
+$spawn                      = "artefacts\ghillie_wrap"
+kind                        = i_attach
+class                       = SCRPTART
+visual                      = dynamics\outfit\ghillie_outfit.ogf
+description                 = st_ghillie_wrap_descr
+inv_name                    = st_ghillie_wrap_name
+inv_name_short              = st_ghillie_wrap_name
+inv_weight                  = 5.0
+cost                        = 45000
+tier                        = 3
+; 1x1 icon: the hood and shoulders of base GAMMA's ghillie outfit icon,
+; shipped in this mod's own texture (the belt only holds 1x1 items).
+icons_texture               = ui\ui_ghillie_gud_icons
+inv_grid_width              = 1
+inv_grid_height             = 1
+inv_grid_x                  = 0
+inv_grid_y                  = 0
+af_rank                     = 0
+degrade_rate                = 0
+lights_enabled              = false
+auto_attach                 = false
+health_restore_speed        = 0
+radiation_restore_speed     = 0
+satiety_restore_speed       = 0
+power_restore_speed         = 0
+bleeding_restore_speed      = 0
+additional_inventory_weight = 0
+additional_inventory_weight2 = 0
+hit_absorbation_sect        = ghillie_wrap_absorbation
+; Right-click "Sew back into ghillie suit" (only while in the backpack).
+use1_functor                = ghillie_gud.menu_sew
+use1_action_functor         = ghillie_gud.menu_sew_action
+
+[ghillie_wrap_absorbation]
+burn_immunity               = 0
+strike_immunity             = 0
+shock_immunity              = 0
+wound_immunity              = 0
+radiation_immunity          = 0
+telepatic_immunity          = 0
+chemical_burn_immunity      = 0
+explosion_immunity          = 0
+fire_wound_immunity         = 0
+
+;--------------------------------------------------------------------------
+; Right-click "Cut into ghillie wrap" on the outfit. use 1 is taken by the 
+; faction patch menu, so this uses use 2.
+;--------------------------------------------------------------------------
+![ghillie_outfit]
+use2_functor                = ghillie_gud.menu_cut
+use2_action_functor         = ghillie_gud.menu_cut_action
+
+;--------------------------------------------------------------------------
+; First-person arms used while a Wearable Devices bracer is worn: ghillie
+; right arm, armor's own left arm, so the rag strips don't clip through the
+; device. Both visuals are filled in by ghillie_gud.script at runtime.    
+;--------------------------------------------------------------------------
+[ghillie_gud_hands_split]:actor_hud
+visual                      = anomaly_weapons\hands\wpn_hand_ghillie
+visual_2                    = anomaly_weapons\hands\wpn_hand_01
+
+;--------------------------------------------------------------------------
+; Exoskeleton detection. Any worn outfit whose section name contains "exo"
+; counts as an exoskeleton (no ghillie bonus). These lists adjust that rule.
+;--------------------------------------------------------------------------
+[ghillie_gud_force_exo]
+; Exo-class suits whose names don't contain "exo" (Nosorog / Rhino frames)
+army_nosorog_outfit
+dolg_nosorog_outfit
+freedom_nosorog_outfit
+isg_nosorog_outfit
+merc_nosorog_outfit
+monolith_nosorog_outfit
+
+[ghillie_gud_never_exo]
+; Suits whose names contain "exo" but should still allow the ghillie. Empty by default.

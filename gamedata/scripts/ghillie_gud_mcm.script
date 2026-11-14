@@ -1,0 +1,22 @@
+-- Ghillie Suits Gud - GSG: MCM page. Defaults depend on which detection script is
+-- active (plain GAMMA or the REDONE collection); see ghillie_gud.get_defaults().
+
+function on_mcm_load()
+	local d = ghillie_gud.get_defaults()
+	return {
+		id = "ghillie_gud", sh = true, gr = {
+			{ id = "title", type = "slide", link = "ui_options_slider_player", text = "ui_mcm_menu_ghillie_gud", size = {512, 50}, spacing = 20 },
+			{ id = "enabled",         type = "check", val = 1, def = d.enabled },
+			{ id = "strength",        type = "track", val = 2, min = 0,   max = 0.98, step = 0.01, def = d.strength },
+			{ id = "strength_still",  type = "track", val = 2, min = 0,   max = 0.98, step = 0.01, def = d.strength_still },
+			{ id = "move_creep",      type = "track", val = 2, min = 0,   max = 1,    step = 0.05, def = d.move_creep },
+			{ id = "move_crouch_run", type = "track", val = 2, min = 0,   max = 1,    step = 0.05, def = d.move_crouch_run },
+			{ id = "move_walk",       type = "track", val = 2, min = 0,   max = 1,    step = 0.05, def = d.move_walk },
+			{ id = "fade_near",       type = "track", val = 2, min = 0,   max = 50,   step = 1,    def = d.fade_near },
+			{ id = "fade_far",        type = "track", val = 2, min = 1,   max = 100,  step = 1,    def = d.fade_far },
+			{ id = "armor_reduction", type = "track", val = 2, min = 0,   max = 1,    step = 0.05, def = d.armor_reduction },
+			{ id = "shot_window",     type = "track", val = 2, min = 0,   max = 15,   step = 0.5,  def = d.shot_window },
+			{ id = "debug",           type = "check", val = 1, def = d.debug },
+		}
+	}
+end

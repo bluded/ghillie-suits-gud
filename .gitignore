@@ -1,0 +1,37 @@
+# Build output from package.py (release zips are built by GitHub Actions, <3 GitHub)
+dist/
+*.zip
+*.7z
+*.rar
+
+# Editor settings
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS clutter
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+
+# Game / MO2 leftovers from testing
+meta.ini
+*.log
+*.bak
+*.tmp
+
+# Texture work files: Shipping only the .dds
+*.psd
+*.xcf
+*.kra
+*.blend
+*.blend1

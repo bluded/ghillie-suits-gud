@@ -1,0 +1,712 @@
+--[[
+	Ghillie Suits Gud - GSG
+	-----------------
+	A ghillie wrap (section ghillie_wrap) worn in an attachment belt slot makes
+	the player harder for human STALKER NPCs to spot, over any armor except exoskeletons.
+
+	How it hooks detection:
+	Requires base GAMMA only. REDONE and sloptimizer-9000 are optional; both are
+	handled if present.
+
+	The engine calls visual_memory_manager.get_visible_value() each vision tick.
+	Several mods ship that script: base GAMMA's "290- Atmospherics", newer
+	Atmospherics releases (v2.69), Stealth Overhaul (v2.31), GAMMA Stealth Crash
+	Fix, and REDONE's foliage-detection version. Rather than depend on any one,
+	this script wraps whichever copy wins in MO2 and scales its result. All of
+	them use the same camo and armor-weight formulas, which the factors below
+	mirror; only REDONE's foliage version gets different MCM defaults.
+
+	  result * camo_factor * armor_factor
+
+	camo_factor   = the wrap's camouflage (movement level x distance fade),
+	                corrected so a worn ghillie_outfit's own camo doesn't stack:
+	                whichever is stronger wins.
+	armor_factor  = the original weight/armor-kind term recomputed with the
+	                armor-kind penalty reduced, divided by the original term.
+	                The reduction fades with the camo (movement x distance).
+
+	Scaling the final result also scales the script's memory/muzzle/marked
+	terms slightly. Shooting zeroes the camo anyway, and "marked" is large
+	enough to still force detection, so this approximation is acceptable.
+
+	The wrapper is installed 6 s after the actor's first update. This only
+	matters for the optional sloptimizer-9000 mod, which replaces get_visible_value
+	5 s after first update but only if it still finds the original function
+	there, so it must go first. Without sloptimizer the delay is harmless.
+]]
+
+local WRAP_SECTION = "ghillie_wrap"
+local ORIG_KOEFF_BASE = 20      -- divisor used by both detection scripts
+local ORIG_CAMO_MIN_DIST = 30   -- outfit camo only applies at >= 30 m
+local REFRESH_MS = 2000         -- fallback re-check of belt/outfit
+local INSTALL_DELAY_MS = 6000   -- after sloptimizer's 5 s install delay
+-- Crouch speeds seen in testing (engine velocity value): slow creeping is
+-- about 1-2, fast crouch movement about 6-8.
+-- At or below this you count as standing still, so the small drift while
+-- settling into position doesn't drop you to the creeping level.
+local STILL_SPEED = 0.1
+local CREEP_SPEED = 2.0
+local CROUCH_RUN_SPEED = 6.0
+
+-- Same table as both detection scripts.
+local jacket_t = {
+	["o_medium"] = 2,
+	["o_sci"] = 2,
+	["o_light"] = 1.35,
+	["o_heavy"] = 4.5,
+}
+
+-- MCM defaults per detection variant. Starting points, to be tuned in game
+-- against the target: unseen while still at 50 m in daylight by an
+-- unalerted NPC.
+local defaults_by_variant = {
+	plain = {
+		enabled = true,
+		strength = 0.85,
+		strength_still = 0.95,  -- standing still: awareness builds at 5% of normal
+		move_creep = 0.9,       -- slow crouch (speed <= CREEP_SPEED)
+		move_crouch_run = 0.5,  -- fast crouch (speed >= CROUCH_RUN_SPEED)
+		move_walk = 0.4,
+		fade_near = 5,
+		fade_far = 25,
+		armor_reduction = 0.5,
+		shot_window = 3,
+		debug = false,
+	},
+	redone = {
+		enabled = true,
+		strength = 0.8,     -- REDONE foliage detection already hides you in grass
+		strength_still = 0.95,  -- standing still: awareness builds at 5% of normal
+		move_creep = 0.9,       -- slow crouch (speed <= CREEP_SPEED)
+		move_crouch_run = 0.5,  -- fast crouch (speed >= CROUCH_RUN_SPEED)
+		move_walk = 0.4,
+		fade_near = 5,
+		fade_far = 25,
+		armor_reduction = 0.5,
+		shot_window = 3,
+		debug = false,
+	},
+}
+
+local variant = nil          -- "plain" | "redone"
+local orig_get_visible_value = nil
+local installed = false
+local failed = false
+
+local state = {
+	has_wrap = false,
+	outfit_sec = nil,
+	jacket = 1,
+	outfit_koeff = 0,
+	is_exo = false,
+	active = false,
+}
+local last_shot = 0
+local next_refresh = 0
+local next_debug = 0
+local exo_lists = nil
+
+--------------------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------------------
+
+local function dbg(fmt, ...)
+	-- GAMMA stubs out printf in some setups; write through the engine log.
+	local msg = "[ghillie_gud] " .. string.format(fmt, ...)
+	local engine_log = rawget(_G, "log")
+	if type(engine_log) == "function" then
+		engine_log(msg)
+	else
+		printf("%s", msg)
+	end
+end
+
+function get_variant()
+	if not variant then
+		-- Only REDONE's foliage detection ships this helper. (Checking for
+		-- get_camo_mult isn't enough: Stealth Overhaul v2.31 has it too.)
+		local foliage = redone_foliage_detection
+		variant = (foliage and type(foliage.get_factor) == "function") and "redone" or "plain"
+	end
+	return variant
+end
+
+function get_defaults()
+	return defaults_by_variant[get_variant()]
+end
+
+-- MCM settings are cached and refreshed once a second from actor_on_update.
+-- ui_mcm.get() reads MCM's saved config on every call, and the vision hook
+-- below runs for every NPC looking at the player, so it must not call it.
+-- ui_mcm.get() also asserts if called during script load or on_mcm_load(),
+-- so it's only ever called from actor callbacks.
+local settings_cache = {}
+local next_settings_refresh = 0
+local SETTINGS_REFRESH_MS = 1000
+
+local function refresh_settings(t)
+	if t < next_settings_refresh then return end
+	next_settings_refresh = t + SETTINGS_REFRESH_MS
+
+	for key, default in pairs(get_defaults()) do
+		local value = nil
+		if ui_mcm then
+			value = ui_mcm.get("ghillie_gud/" .. key)
+		end
+		if value == nil then value = default end   -- false and 0 are valid settings
+		settings_cache[key] = value
+	end
+end
+
+local function cfg(key)
+	local value = settings_cache[key]
+	if value ~= nil then return value end
+	return get_defaults()[key]
+end
+
+local function read_list(section)
+	local t = {}
+	if ini_sys:section_exist(section) then
+		local n = ini_sys:line_count(section)
+		for i = 0, n - 1 do
+			local _, id = ini_sys:r_line_ex(section, i, "", "")
+			if id and id ~= "" then t[id] = true end
+		end
+	end
+	return t
+end
+
+local function is_exo(sec)
+	if not exo_lists then
+		exo_lists = {
+			force = read_list("ghillie_gud_force_exo"),
+			never = read_list("ghillie_gud_never_exo"),
+		}
+	end
+	if exo_lists.never[sec] then return false end
+	if exo_lists.force[sec] then return true end
+	return string.find(sec, "exo", 1, true) ~= nil
+end
+
+--------------------------------------------------------------------------------
+-- Actor state
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+-- First-person ghillie arms
+--
+-- The modded exes' player HUD lets a script swap the arms model by HUD
+-- section. Base GAMMA's hand packs define [actor_hud_ghillie]. A HUD section
+-- can also give the left arm its own mesh with visual_2.
+--
+-- Wearable Devices (optional):
+-- * Its own arm swap only happens for a wrist device worn with an exoskeleton.
+--   The wrap can't be worn on an exo, so the two never want the arms at the
+--   same time. They only overlap for a moment when the outfit changes, so
+--   after an outfit change the ghillie arms are re-applied twice more, and
+--   when the wrap comes off Wearable Devices is told to re-apply its choice.
+-- * The ghillie arm's rag strips clip through devices on the left wrist.
+--   While its bracer is worn, the left arm uses the armor's own sleeve
+--   instead (the same idea as its "slim" left arms for exos), and the right
+--   arm stays ghillie.
+-- * Future GSG updates might revisit this clipping issue in future WD updates.
+--	 For now, current solution is good enough and looks great in my opinion. 
+--------------------------------------------------------------------------------
+
+local GHILLIE_HANDS = "actor_hud_ghillie"
+local SPLIT_HANDS = "ghillie_gud_hands_split"   -- defined in mod_system_ghillie_gud.ltx
+local DEFAULT_HANDS = "actor_hud_05"
+local REAPPLY_DELAYS_MS = { 500, 1500 }
+local BRACER_POLL_MS = 250
+
+local hands_mode = nil      -- nil (armor's own arms) | "full" | "split"
+local hands_outfit = nil
+local hands_reapply = {}
+local load_retry_until = 0   -- re-applies stay on for a few seconds after a load
+local LOAD_RETRY_WINDOW_MS = 5000
+local bracer_worn = false
+local next_bracer_poll = 0
+
+local function base_hands_section(sec)
+	return sec and ini_sys:r_string_ex(sec, "player_hud_section") or DEFAULT_HANDS
+end
+
+local function is_bracer_worn()
+	if wd_slots and type(wd_slots.is_bracer_worn) == "function" then
+		return wd_slots.is_bracer_worn() == true
+	end
+	return false
+end
+
+-- Point the split section at the ghillie right arm + the armor's left arm.
+local function write_split_section()
+	local ghillie_visual = ini_sys:r_string_ex(GHILLIE_HANDS, "visual")
+	local armor_hands = base_hands_section(state.outfit_sec)
+	local left_visual = ini_sys:r_string_ex(armor_hands, "visual_2") or ini_sys:r_string_ex(armor_hands, "visual")
+	if not (ghillie_visual and left_visual) then return false end
+	local sys = system_ini()
+	sys:set_readonly(false)
+	sys:set_override_names(true)
+	sys:w_string(SPLIT_HANDS, "visual", ghillie_visual)
+	sys:w_string(SPLIT_HANDS, "visual_2", left_visual)
+	sys:set_override_names(false)
+	sys:set_readonly(true)
+	return true
+end
+
+local function apply_hands(mode)
+	local hud = get_player_hud and get_player_hud()
+	if not hud then return false end
+	if mode == "full" then
+		hud:set_hands(GHILLIE_HANDS)
+	elseif mode == "split" then
+		if not write_split_section() then
+			hud:set_hands(GHILLIE_HANDS)
+		else
+			hud:set_hands(SPLIT_HANDS)
+		end
+	else
+		hud:set_hands(base_hands_section(state.outfit_sec))
+		hud:reset_hands()
+		-- Let Wearable Devices put back its own arms if it wants them.
+		if wd_hands_left and type(wd_hands_left.reset) == "function" then
+			wd_hands_left.reset()
+		end
+	end
+	return true
+end
+
+local function wanted_hands_mode()
+	if not (state.active and ini_sys:section_exist(GHILLIE_HANDS)) then return nil end
+	if bracer_worn and ini_sys:section_exist(SPLIT_HANDS) then return "split" end
+	return "full"
+end
+
+local function update_hands()
+	local want = wanted_hands_mode()
+	local outfit_changed = (state.outfit_sec ~= hands_outfit)
+	if want == hands_mode and not (want and outfit_changed) then return end
+
+	if apply_hands(want) then
+		hands_mode = want
+		hands_outfit = state.outfit_sec
+		hands_reapply = {}
+		-- set_hands() locks the arms against the engine's own armor-change
+		-- reloads, so delayed re-applies are only needed when something else
+		-- may also set the arms: Wearable Devices, or the engine itself while
+		-- a save is still finishing loading.
+		local t = time_global()
+		local wd_present = wd_hands_left and type(wd_hands_left.reset) == "function"
+		if want and (wd_present or t < load_retry_until) then
+			for _, d in ipairs(REAPPLY_DELAYS_MS) do
+				hands_reapply[#hands_reapply + 1] = t + d
+			end
+		end
+	end
+end
+
+local function reset_hands_state(t)
+	-- Start the arms from scratch on every load, and keep the delayed
+	-- re-applies on for a few seconds in case the engine sets the armor's
+	-- arms while the save is still loading.
+	hands_reapply = {}
+	next_bracer_poll = 0
+	hands_mode = nil
+	hands_outfit = nil
+	bracer_worn = is_bracer_worn()
+	load_retry_until = t + LOAD_RETRY_WINDOW_MS
+end
+
+local function tick_hands(t)
+	if t >= next_bracer_poll then
+		next_bracer_poll = t + BRACER_POLL_MS
+		local worn = is_bracer_worn()
+		if worn ~= bracer_worn then
+			bracer_worn = worn
+			update_hands()
+		end
+	end
+	if not hands_mode or #hands_reapply == 0 then return end
+	if t >= hands_reapply[1] then
+		if apply_hands(hands_mode) then
+			table.remove(hands_reapply, 1)
+		end
+	end
+end
+
+------------------------------------------------------------------------------------
+-- Exoskeleton block: The wrap can't go on an exo's belt. That shit would be too OP.
+------------------------------------------------------------------------------------
+
+local kick_pending = false
+
+local function kick_wrap_off_belt()
+	local actor = db.actor
+	if not actor then return end
+	local outfit = actor:item_in_slot(7)
+	if not (outfit and is_exo(outfit:section())) then return end
+	local wraps = {}
+	actor:iterate_belt(function(owner, item)
+		if item and item:section() == WRAP_SECTION then
+			wraps[#wraps + 1] = item
+		end
+	end)
+	for _, item in ipairs(wraps) do
+		actor:move_to_ruck(item)
+	end
+	if #wraps > 0 then
+		actor_menu.set_msg(1, game.translate_string("st_ghillie_gud_no_exo"), 4)
+	end
+end
+
+function refresh()
+	local actor = db.actor
+	if not actor then return end
+
+	local found = false
+	actor:iterate_belt(function(owner, item)
+		if item and item:section() == WRAP_SECTION then
+			found = true
+		end
+	end)
+
+	local outfit = actor:item_in_slot(7)
+	local sec = outfit and outfit:section()
+	state.has_wrap = found
+	state.outfit_sec = sec
+	state.jacket = sec and jacket_t[ini_sys:r_string_ex(sec, "kind") or ""] or 1
+	state.outfit_koeff = sec and ini_sys:r_float_ex(sec, "npc_blindness_koeff") or 0
+	state.is_exo = sec and is_exo(sec) or false
+	state.active = found and (sec ~= nil) and (not state.is_exo)
+
+	-- Don't move items inside an inventory callback; do it next update.
+	kick_pending = found and state.is_exo
+
+	update_hands()
+end
+
+--------------------------------------------------------------------------------
+-- Factors
+--------------------------------------------------------------------------------
+
+-- Which movement rule decided the last movement_factor() call; shown in
+-- the debug log so a wrong "off" can be traced to its cause.
+local move_reason = "still"
+
+local function movement_factor(velocity)
+	if (time_global() - last_shot) < cfg("shot_window") * 1000 then
+		move_reason = "off=fired"
+		return 0
+	end
+	if IsMoveState("mcSprint") then move_reason = "off=sprint" return 0 end
+	if IsMoveState("mcJump") then move_reason = "off=jump" return 0 end
+	if IsMoveState("mcFall") then move_reason = "off=fall" return 0 end
+	if velocity <= STILL_SPEED then
+		move_reason = "still"
+		return 1
+	end
+	if IsMoveState("mcCrouch") then
+		-- Speed-based: slow creeping keeps most of the camo, fast crouch
+		-- movement keeps less, with a straight blend in between.
+		local t = clamp((velocity - CREEP_SPEED) / (CROUCH_RUN_SPEED - CREEP_SPEED), 0, 1)
+		move_reason = t <= 0 and "creep" or (t >= 1 and "crouch-run" or "crouch")
+		return cfg("move_creep") + (cfg("move_crouch_run") - cfg("move_creep")) * t
+	end
+	move_reason = "walk"
+	return cfg("move_walk")
+end
+
+local function move_flags()
+	local f = {}
+	for _, s in ipairs({ "mcCrouch", "mcAccel", "mcSprint", "mcJump", "mcFall", "mcLanding" }) do
+		if IsMoveState(s) then f[#f + 1] = s:sub(3) end
+	end
+	return #f > 0 and table.concat(f, "+") or "-"
+end
+
+local function distance_factor(d)
+	local near, far = cfg("fade_near"), cfg("fade_far")
+	if far <= near then
+		return d >= far and 1 or 0
+	end
+	local t = clamp((d - near) / (far - near), 0, 1)
+	return t * t * (3 - 2 * t)
+end
+
+-- The camo the detection script already applied for the worn outfit.
+local function original_outfit_camo(velocity, d)
+	local k = state.outfit_koeff
+	if k > 0 and velocity == 0 and d >= ORIG_CAMO_MIN_DIST then
+		return clamp(k / ORIG_KOEFF_BASE * (1 - d * 0.01), 0.02, 1.0)
+	end
+	return 1
+end
+
+-- How much of the wrap's effect applies right now, 0..1: the movement level
+-- times the distance fade. Both the camo and the armor-penalty reduction use it.
+local function wrap_scale(velocity, d)
+	local m = movement_factor(velocity)
+	if m <= 0 then return 0 end
+	return m * distance_factor(d)
+end
+
+local function camo_factor(velocity, d, scale)
+	-- Standing still gets its own, stronger strength: detection builds up
+	-- over time, so lying still in an NPC's view should last minutes, not
+	-- seconds. move_reason was set by wrap_scale() just before this call.
+	local strength = (move_reason == "still") and cfg("strength_still") or cfg("strength")
+	local wrap = 1 - strength * scale
+	wrap = clamp(wrap, 0.02, 1.0)
+	local orig = original_outfit_camo(velocity, d)
+	-- Whichever camo is stronger wins; never stack.
+	if wrap >= orig then return 1 end
+	return wrap / orig
+end
+
+-- The armor-penalty reduction fades with the camo (scale), so it gives
+-- nothing while sprinting, firing or up close. When scale is 0 the
+-- calculation is skipped entirely.
+local function armor_factor(d, scale)
+	local jm = state.jacket
+	if jm <= 1 or scale <= 0 then return 1 end
+	local red = cfg("armor_reduction") * scale
+	if red <= 0 then return 1 end
+
+	local wei = math.exp(db.actor:get_total_weight() / 100)
+	-- Some versions clamp this at 0.01, some don't. It makes no difference
+	-- here: once it's that small both terms below floor at 1.
+	local odw = 1.1 - 0.02 * d
+	local wcfg = stealth_mcm and stealth_mcm.get_config("weight") or 1
+
+	local old = wei * jm * odw * wcfg
+	old = old > 1 and old or 1
+	local jm_new = jm * (1 - red)
+	jm_new = jm_new > 1 and jm_new or 1
+	local new = wei * jm_new * odw * wcfg
+	new = new > 1 and new or 1
+	return new / old
+end
+
+local function calculate_multiplier(velocity, distance)
+	local scale = wrap_scale(velocity, distance)
+	-- No wrap effect (sprint, jump, fall, fired, too close): both factors
+	-- would be 1, so skip them. move_reason is already set for the debug log.
+	if scale <= 0 then return 1 end
+	return camo_factor(velocity, distance, scale) * armor_factor(distance, scale)
+end
+
+--------------------------------------------------------------------------------
+-- Detection wrapper
+--------------------------------------------------------------------------------
+
+local function wrapped_get_visible_value(npc, who, time_delta, time_quant, luminocity, velocity_factor, velocity, distance, object_distance, always_visible_distance)
+	local value = orig_get_visible_value(npc, who, time_delta, time_quant, luminocity, velocity_factor, velocity, distance, object_distance, always_visible_distance)
+
+	if failed or not state.active then return value end
+	if not (who and npc and who:id() == AC_ID and npc:id() ~= AC_ID) then return value end
+	if not (IsStalker(npc) and npc:alive()) then return value end
+	if not cfg("enabled") then return value end
+
+	local ok, mult = pcall(calculate_multiplier, velocity, object_distance)
+	if not ok then
+		failed = true
+		dbg("ERROR, disabling ghillie stealth for this session: %s", tostring(mult))
+		return value
+	end
+
+	if cfg("debug") and time_global() > next_debug then
+		next_debug = time_global() + 1000
+		dbg("npc=%s dist=%.1f vel=%.2f mult=%.3f %s states=%s shot_ago=%ds value=%.4f -> %.4f",
+			npc:name(), object_distance, velocity, mult, move_reason, move_flags(),
+			math.floor((time_global() - last_shot) / 1000), value, value * mult)
+	end
+
+	return value * mult
+end
+
+local install_at = nil
+
+local function install()
+	if installed then return end
+	local vmm = visual_memory_manager
+	if not (vmm and type(vmm.get_visible_value) == "function") then
+		install_at = time_global() + 1000
+		return
+	end
+	get_variant()
+	orig_get_visible_value = vmm.get_visible_value
+	vmm.get_visible_value = wrapped_get_visible_value
+	installed = true
+	dbg("installed detection wrapper (variant: %s)", variant)
+end
+
+--------------------------------------------------------------------------------
+-- Right-click: cut ghillie_outfit into a wrap, and sew a wrap back
+--------------------------------------------------------------------------------
+-- The wrap keeps the outfit's condition on its own condition bar, so sewing it
+-- back gives the same condition (no free repair). The wrap never wears out
+-- (degrade_rate = 0, no protection) and no GAMMA tool repairs belt
+-- attachments, so the stored value stays put. Condition has no effect on the
+-- wrap's stealth. Upgraded suits can't be cut, so no upgrades are lost.
+
+local OUTFIT_SECTION = "ghillie_outfit"
+
+-- New conversion results waiting for condition: id -> { cond, section }. Set once the
+-- object is online, not through alife_create_item's cond option: for belt
+-- attachments that only works while a GAMMA artefact MCM option is on.
+local pending_cond = {}
+
+local function owned_by_actor(obj)
+	local p = obj and obj:parent()
+	return p and p:id() == AC_ID
+end
+
+local function is_worn_outfit(obj)
+	local worn = db.actor:item_in_slot(7)
+	return worn and worn:id() == obj:id()
+end
+
+local function is_on_belt(obj)
+	local found = false
+	db.actor:iterate_belt(function(_, item)
+		if item:id() == obj:id() then found = true end
+	end)
+	return found
+end
+
+local function has_upgrades(obj)
+	return utils_item and type(utils_item.has_upgrades) == "function"
+		and utils_item.has_upgrades(obj) and true or false
+end
+
+local function apply_pending_cond()
+	for id, p in pairs(pending_cond) do
+		local obj = level.object_by_id(id)
+		if obj and obj:section() ~= p.section then
+			pending_cond[id] = nil
+		elseif obj then
+			obj:set_condition(p.cond)
+			-- GAMMA's artefact binder restores conditions it has recorded;
+			-- record ours so it keeps this value.
+			if p.section == WRAP_SECTION and zz_item_artefact and type(zz_item_artefact.cond_t) == "table" then
+				zz_item_artefact.cond_t[id] = p.cond
+			end
+			dbg("condition applied: %s id=%s requested=%.6f actual=%.6f", p.section, tostring(id), p.cond, obj:condition())
+			pending_cond[id] = nil
+		end
+	end
+end
+
+-- Create the replacement before consuming its source. Pending condition is
+-- authoritative even if the player sews the wrap before its first update.
+local function exchange_item(obj, section, message)
+	local id = obj:id()
+	local pending = pending_cond[id]
+	local cond = pending and pending.cond or obj:condition()
+	local replacement = alife_create_item(section, db.actor)
+	if not (replacement and replacement.id) then
+		actor_menu.set_msg(1, game.translate_string("st_ghillie_gud_exchange_failed"), 4)
+		return
+	end
+	-- Store condition on the server object before it comes online, following
+	-- GAMMA's artefact conversion path. Also apply it to the online object.
+	if utils_stpk then
+		local data = utils_stpk.get_item_data(replacement)
+		data.condition = cond
+		utils_stpk.set_item_data(data, replacement)
+	end
+	pending_cond[replacement.id] = { cond = cond, section = section }
+	dbg("conversion: %s -> %s condition=%.6f", obj:section(), section, cond)
+	if section == WRAP_SECTION then
+		if zz_item_artefact and type(zz_item_artefact.cond_t) == "table" then
+			zz_item_artefact.cond_t[replacement.id] = cond
+		end
+	end
+	pending_cond[id] = nil
+	if zz_item_artefact and type(zz_item_artefact.cond_t) == "table" then
+		zz_item_artefact.cond_t[id] = nil
+	end
+	alife_release(obj)
+	actor_menu.set_msg(1, game.translate_string(message), 4)
+end
+
+function menu_cut(obj)
+	if not owned_by_actor(obj) then return end
+	if is_worn_outfit(obj) then return end -- take it off first
+	return game.translate_string("st_ghillie_gud_cut")
+end
+
+function menu_cut_action(obj)
+	if not owned_by_actor(obj) or is_worn_outfit(obj) then return end
+	if has_upgrades(obj) then
+		actor_menu.set_msg(1, game.translate_string("st_ghillie_gud_cut_upgraded"), 4)
+		return
+	end
+	exchange_item(obj, WRAP_SECTION, "st_ghillie_gud_cut_done")
+end
+
+function menu_sew(obj)
+	if not owned_by_actor(obj) then return end
+	if is_on_belt(obj) then return end -- take it off the belt first
+	return game.translate_string("st_ghillie_gud_sew")
+end
+
+function menu_sew_action(obj)
+	if not owned_by_actor(obj) or is_on_belt(obj) then return end
+	exchange_item(obj, OUTFIT_SECTION, "st_ghillie_gud_sew_done")
+end
+
+--------------------------------------------------------------------------------
+-- Callbacks
+--------------------------------------------------------------------------------
+
+local function on_item_change()
+	-- Belt/slot state may not be settled inside the callback; re-check soon.
+	next_refresh = 0
+end
+
+local function actor_on_first_update()
+	local t = time_global()
+	if not installed then install_at = t + INSTALL_DELAY_MS end
+	-- Binder records carry wrap condition across saves. Old pending IDs belong
+	-- to the previous world and must never be applied to reused IDs.
+	pending_cond = {}
+	kick_pending = false
+	next_settings_refresh = 0
+	refresh_settings(t)
+	reset_hands_state(t)
+	refresh()
+end
+
+local function actor_on_update()
+	local t = time_global()
+	refresh_settings(t)
+	if (not installed) and install_at and t >= install_at then
+		install()
+	end
+	if kick_pending then
+		kick_pending = false
+		kick_wrap_off_belt()
+		next_refresh = 0
+	end
+	if next(pending_cond) then apply_pending_cond() end
+	if t >= next_refresh then
+		next_refresh = t + REFRESH_MS
+		refresh()
+	end
+	tick_hands(t)
+end
+
+local function actor_on_weapon_fired()
+	last_shot = time_global()
+end
+
+function on_game_start()
+	RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+	RegisterScriptCallback("actor_on_update", actor_on_update)
+	RegisterScriptCallback("actor_on_weapon_fired", actor_on_weapon_fired)
+	RegisterScriptCallback("actor_item_to_belt", on_item_change)
+	RegisterScriptCallback("actor_item_to_ruck", on_item_change)
+	RegisterScriptCallback("actor_item_to_slot", on_item_change)
+	RegisterScriptCallback("actor_on_item_drop", on_item_change)
+end
